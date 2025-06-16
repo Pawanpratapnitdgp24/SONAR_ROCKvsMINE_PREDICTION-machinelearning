@@ -1,0 +1,117 @@
+-- PC
+SELECT DISTINCT policy_no, claim_no
+FROM stage_misreg.STAGE_SRM_PREMIUM_LOSS
+WHERE policy_no = '0041000566';
+
+-- YHT
+SELECT DISTINCT policy_no, claim_no
+FROM stage_misreg.STAGE_SRM_PREMIUM_LOSS
+WHERE policy_no = '0041000706';
+✅ Goal: Ensure each policy has at least one claim.
+
+2. Check Metadata: Class/CD, LOB, Division, Section, Profit Unit
+sql
+Copy
+Edit
+SELECT 
+  policy_no, claim_no, 
+  GDW_RDM_ANNUAL_STATEMENT_LINE_CD AS class_cd,
+  GDW_LINE_OF_BUSINESS_CD AS lob,
+  DIVISION_NO AS division,
+  SECTION_CD AS section,
+  PROFIT_UNIT_CD AS profit_unit,
+  SYSTEM_ID, COVERAGE_CODE, SRM_OUTGOING_TRANSACTION_ID
+FROM stage_misreg.STAGE_SRM_PREMIUM_LOSS
+WHERE policy_no IN ('0041000566','0041000706');
+✅ Goal: Confirm metadata consistency after code changes.
+
+3. Date Validations
+Ensure effective and expiration dates are valid:
+
+sql
+Copy
+Edit
+SELECT 
+  policy_no, claim_no,
+  POLICY_EFF_DT, POLICY_EXP_DT,
+  TRAN_EFF_DT, TRAN_EXP_DT,
+  COVERAGE_EFF_DT, COVERAGE_EXP_DT
+FROM stage_misreg.STAGE_SRM_PREMIUM_LOSS
+WHERE policy_no IN ('0041000566','0041000706')
+  AND (
+    POLICY_EXP_DT < POLICY_EFF_DT
+    OR TRAN_EXP_DT < TRAN_EFF_DT
+    OR COVERAGE_EXP_DT < COVERAGE_EFF_DT
+  );
+⚠️ Goal: Identify bad date sequences (should return zero rows post-fix).
+
+4. Premium Amounts and Effective Dates
+Join with your transaction/date tables to fetch and verify:
+
+sql
+Copy
+Edit
+SELECT
+  p.policy_no,
+  t.premium_am,
+  d.actual_dt AS effective_date
+FROM misreg.ttransaction t
+JOIN misreg.tdate d ON t.effective_dt_sk = d.date_sk
+JOIN misreg.tpolicy p ON t.policy_sk = p.policy_sk
+WHERE p.policy_no IN ('0041000566','0041000706')
+  AND t.premium_am <> 0;
+✅ Goal: Check that premium amounts and dates align with staging.
+
+5. Transaction Amounts (trans_am)
+Aggregate and inspect transactions for premium recovery or loss:
+
+sql
+Copy
+Edit
+SELECT
+  policy_no,
+  claim_no,
+  TRAN_EFF_DT,
+  ACCOUNTING_DT,
+  sum(TRAN_AM) AS total_trans_amt,
+  PREMIUM_LOSS_IND
+FROM stage_misreg.STAGE_SRM_PREMIUM_LOSS
+WHERE policy_no IN ('0041000566','0041000706')
+GROUP BY
+  policy_no, claim_no, TRAN_EFF_DT, ACCOUNTING_DT, PREMIUM_LOSS_IND;
+✅ Goal: Confirm amounts add up and the PREMIUM_LOSS_IND flags correctly.
+
+6. Compare with External Feed (FISERV)
+Match staging data with CIP feed values for inception and recovery:
+
+sql
+Copy
+Edit
+SELECT 
+  f.FISERV_PREMIUM_RECORD
+FROM stage_misreg.stage_cip_premium_feed_details f
+WHERE param_num = '202505'
+  AND EXISTS (
+    SELECT 1
+    FROM misreg.TPOLICY tp
+    WHERE tp.policy_no IN ('0041000566','0041000706')
+      AND SUBSTR(f.FISERV_PREMIUM_RECORD, 31, 10) = tp.policy_no
+      AND TO_DATE(SUBSTR(f.FISERV_PREMIUM_RECORD,63,10), 'yyyy-mm-dd') = tp.inception_dt
+  );
+✅ Goal: Ensure clean integration—every record matches inception, policy, and code changes.
+
+✅ Summary Table (Example for PC=0041000566)
+Item	Findings / Expected Results
+Claims found	Yes (e.g., 4248740, ...)
+Metadata	class_cd, lob, division, section, profit_unit filled correctly
+Date validations	No mismatches in eff/exp dates
+Premium amounts & dates	Aligned with ttransaction records
+Total trans_am	Sum matches expected recoveries or losses
+CIP feed match	One or more records found, confirming ingestion and inception alignment
+
+Repeat the same for YHT policy 0041000706.
+
+✅ Final Thoughts
+This comprehensive checklist lets you systematically validate the sample PC and YHT policies. You can tailor these queries into an automated script or SQL validation report.
+
+Would you like help building that script or reviewing actual outputs for anomalies?
